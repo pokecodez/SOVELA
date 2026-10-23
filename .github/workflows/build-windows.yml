@@ -1,1 +1,60 @@
+name: Build & release Sovela Windows
 
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install packaging tools
+        run: python -m pip install pyinstaller
+
+      - name: Configure Sovela
+        shell: pwsh
+        env:
+          PUBLIC_SUPABASE_URL: ${{ vars.SOVELA_SUPABASE_URL }}
+          PUBLIC_SUPABASE_KEY: ${{ vars.SOVELA_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if (-not $env:PUBLIC_SUPABASE_URL -or -not $env:PUBLIC_SUPABASE_KEY) {
+            throw 'Missing Supabase repository variables.'
+          }
+          $settings = Get-Content sovela_cloud.json -Raw | ConvertFrom-Json
+          $settings.supabase_url = $env:PUBLIC_SUPABASE_URL
+          $settings.supabase_publishable_key = $env:PUBLIC_SUPABASE_KEY
+          $settings.updates_repo = '${{ github.repository }}'
+          $settings | ConvertTo-Json | Set-Content sovela_cloud.json -Encoding utf8
+
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onedir --name Sovela --icon sovela.ico --add-data "sovela.png;." main.py
+          Copy-Item sovela_config.json dist/Sovela/sovela_config.json
+          Copy-Item sovela_cloud.json dist/Sovela/sovela_cloud.json
+          Copy-Item PRIVACY.txt dist/Sovela/PRIVACY.txt
+          Compress-Archive -Path dist/Sovela -DestinationPath Sovela-Windows.zip
+
+      - name: Upload application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sovela-Windows
+          path: Sovela-Windows.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "${{ github.ref_name }}" Sovela-Windows.zip --title "Sovela ${{ github.ref_name }}" --notes "Sovela PC Care preview."
