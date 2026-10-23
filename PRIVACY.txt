@@ -1,0 +1,17 @@
+SOVELA v2.2 — PROTOTYPE PRIVACY SUMMARY
+
+When configured by the creator, account email and password are sent over HTTPS
+to that creator's Supabase Auth project. Sovela does not store the password on
+the PC. It saves only a refresh token encrypted by the Windows account's DPAPI
+for automatic sign-in; sign-out removes it locally and requests server revoke.
+An account profile holds trial start/end dates and any subscription status.
+
+Cleaner, startup, scan, PC-health and activity checks run locally. They are not
+uploaded by this account system. The existing optional hosted AI, if separately
+configured, has its own data sharing implications and must be disclosed before
+public use. The update checker sends a request to the creator's public GitHub
+Releases listing, when you press Check updates.
+
+This is not a complete commercial privacy policy. Before public release,
+provide contact information, retention/deletion terms, hosting region, account
+deletion, and privacy rights details appropriate to your market.
