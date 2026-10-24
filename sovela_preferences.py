@@ -5,6 +5,7 @@ from pathlib import Path
 
 DEFAULTS = {
     'smooth_motion': True,
+    'safe_window_frame': False,
     'motion_style': 'Variety',
     'motion_speed': 'Balanced',
     'scan_notifications': True,
@@ -31,7 +32,7 @@ def validated(source):
     result = DEFAULTS.copy()
     if not isinstance(source, dict):
         return result
-    for key in ('smooth_motion','scan_notifications','scan_error_notifications','show_scan_timer',
+    for key in ('safe_window_frame','smooth_motion','scan_notifications','scan_error_notifications','show_scan_timer',
                 'always_on_top','hover_hints','scan_opens_page','check_at_launch'):
         if type(source.get(key)) is bool:
             result[key] = source[key]

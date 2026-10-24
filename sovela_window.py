@@ -13,6 +13,10 @@ def apply_custom_chrome(root):
     if sys.platform != 'win32':
         return False
     try:
+        from sovela_preferences import load
+        if load().get('safe_window_frame',False):
+            # Reliable fallback on affected GPUs; keeps native window chrome.
+            return False
         import ctypes
         from ctypes import wintypes
         root.update_idletasks()
@@ -61,3 +65,32 @@ def schedule_chrome(root):
         if event.widget is root:
             root.after(65, safe_apply)
     root.bind('<Map>', on_map, add='+')
+
+
+def begin_windows_titlebar_drag(root):
+    """Ask Windows to move a custom-chrome window (no Tk redraw per pixel).
+
+    Uses native compositor window moving instead of root.geometry on every mouse
+    event. Returns False on other platforms / unsupported window managers.
+    """
+    if sys.platform != 'win32':
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32=ctypes.windll.user32
+        user32.GetAncestor.argtypes=[wintypes.HWND,wintypes.UINT]
+        user32.GetAncestor.restype=wintypes.HWND
+        user32.ReleaseCapture.argtypes=[]
+        user32.ReleaseCapture.restype=wintypes.BOOL
+        user32.SendMessageW.argtypes=[wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
+        user32.SendMessageW.restype=wintypes.LPARAM
+        hwnd=user32.GetAncestor(root.winfo_id(),2)
+        if not hwnd:
+            return False
+        user32.ReleaseCapture()
+        # WM_NCLBUTTONDOWN / HTCAPTION; hands the motion to the compositor.
+        user32.SendMessageW(hwnd,0x00A1,2,0)
+        return True
+    except (OSError,AttributeError,ValueError):
+        return False

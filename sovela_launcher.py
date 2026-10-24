@@ -8,7 +8,7 @@ from pathlib import Path
 from sovela_auth import (AccountError, SupabaseAccounts, TokenStore, read_cloud_config,
                          VERSION)
 from sovela_v31 import SovelaV31
-from sovela_window import schedule_chrome
+from sovela_window import schedule_chrome, begin_windows_titlebar_drag
 from sovela_ai import windows_work_area, clamp_to_area
 
 BG='#F3F6F5'
@@ -186,10 +186,15 @@ class AccountGate:
         tk.Frame(self.root,height=1,bg='#E1EAE6').pack(fill='x')
 
     def _start_auth_drag(self,event):
+        self._auth_drag_native=begin_windows_titlebar_drag(self.root)
+        if self._auth_drag_native:
+            return
         self._auth_dx=event.x_root-self.root.winfo_x()
         self._auth_dy=event.y_root-self.root.winfo_y()
 
     def _move_auth_drag(self,event):
+        if getattr(self,'_auth_drag_native',False):
+            return
         x=event.x_root-getattr(self,'_auth_dx',0)
         y=event.y_root-getattr(self,'_auth_dy',0)
         area=(windows_work_area(event.x_root,event.y_root)

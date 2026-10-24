@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
-VERSION = '3.1.0'
+VERSION = '3.1.1'
 MAX_RESPONSE_BYTES = 1_000_000
 
 
@@ -311,7 +311,7 @@ class SupabaseAccounts:
         endpoint=self.url+'/functions/v1/create-checkout'
         req=urllib.request.Request(endpoint,data=b'{}',method='POST',headers={
             'apikey':self.key,'Authorization':'Bearer '+session.access_token,
-            'Content-Type':'application/json','User-Agent':'Sovela/3.1'})
+            'Content-Type':'application/json','User-Agent':'Sovela/3.1.1'})
         try:
             with self.opener(req,timeout=20) as response:
                 value=json.loads(response.read(20000))
@@ -347,6 +347,13 @@ class SupabaseAccounts:
         try:uuid.UUID(str(user_id))
         except (ValueError,TypeError):raise AccountError('Invalid account ID.') from None
         return self.request('POST','/rest/v1/rpc/sovela_admin_revoke',
+            {'target_user':str(user_id)},session.access_token)
+
+    def admin_end_trial(self,session,user_id):
+        import uuid
+        try:uuid.UUID(str(user_id))
+        except (ValueError,TypeError):raise AccountError('Invalid account ID.') from None
+        return self.request('POST','/rest/v1/rpc/sovela_admin_end_trial',
             {'target_user':str(user_id)},session.access_token)
 
     def verify_recovery_code(self,email,code):

@@ -5,9 +5,13 @@ It uses the existing trusted Windows malware tooling unchanged.
 """
 from __future__ import annotations
 import re
+import math
+from datetime import datetime, timezone
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox
+from sovela_window import begin_windows_titlebar_drag
+from sovela_preferences import save as save_preferences
 from sovela_v30 import SovelaV3
 from sovela_ui_v15 import (SLATE_BG, SLATE_SIDE, SLATE_CARD, SLATE_GREEN, SLATE_GREEN_SOFT,
     SLATE_MUTED, SLATE_FONT, SLATE_TEXT, WHITE)
@@ -35,6 +39,7 @@ class SovelaV31(SovelaV3):
         self._remote_minimum=(0,0,0)
         self._update_gate=False
         self._admin_config={}
+        self._native_titlebar_drag=False
         super().__init__(root,session,account_client,updates_repo or REPO)
         self.root.title('Sovela | PC Care '+VERSION)
         if self.account_client:
@@ -50,7 +55,8 @@ class SovelaV31(SovelaV3):
         def change(w):
             if isinstance(w,tk.Label):
                 value=str(w.cget('text'))
-                if 'v3.0' in value:w.configure(text=value.replace('v3.0','v3.1'))
+                updated=re.sub(r'v3\.(?:0|1)(?:\.\d+)?', 'v'+VERSION, value)
+                if value!=updated:w.configure(text=updated)
             for ch in w.winfo_children():change(ch)
         try:change(widget)
         except tk.TclError:pass
@@ -71,16 +77,48 @@ class SovelaV31(SovelaV3):
             self._sync_nav_state()
         except (AttributeError,tk.TclError):pass
 
+    def _nav_hover(self, widget, name, entering):
+        """v3.1.1: one hover only; never use the old light-theme animation."""
+        try:
+            if not widget.winfo_exists():
+                return
+            # Cancel previously scheduled legacy hover animation frames.
+            widget._sovela_motion = getattr(widget, '_sovela_motion', 0) + 1
+            active = name == getattr(self, 'current_tab', '')
+            widget.configure(bg='#2C625A' if active else ('#24574F' if entering else DEEP),
+                             fg='#F2FFFB' if active else '#B5D7CD',
+                             activebackground='#24574F', activeforeground='#F2FFFB')
+        except tk.TclError:
+            pass
+
     def _sync_nav_state(self):
         for name,button in getattr(self,'nav_buttons',{}).items():
             active=name==getattr(self,'current_tab','')
             try:
+                button._sovela_motion=getattr(button,'_sovela_motion',0)+1
                 button.configure(bg='#2C625A' if active else DEEP,
                     fg='#F2FFFB' if active else '#B5D7CD',
-                    disabledforeground='#FFFFFF',
-                    state='disabled' if active else 'normal',cursor='arrow' if active else 'hand2',
-                    activebackground='#2C625A',activeforeground='white')
+                    disabledforeground='#F2FFFB',
+                    state='disabled' if active else 'normal',
+                    cursor='arrow' if active else 'hand2',
+                    activebackground='#24574F',activeforeground='#F2FFFB')
             except tk.TclError:pass
+
+    def start_drag(self, event):
+        """Let the Windows compositor move our custom-chrome window natively.
+
+        Calling Tk geometry repeatedly during motion makes some GPUs paint a
+        temporary black client area. Fall back to Tk positioning on other OSs.
+        """
+        self._native_titlebar_drag = begin_windows_titlebar_drag(self.root)
+        if self._native_titlebar_drag:
+            self.root.after(70, self.ensure_visible)
+        else:
+            super().start_drag(event)
+
+    def drag(self, event):
+        if not self._native_titlebar_drag:
+            super().drag(event)
 
     def draw_titlebar(self):
         super().draw_titlebar()
@@ -154,9 +192,24 @@ class SovelaV31(SovelaV3):
                     self._populate_admin_list()
                 else:
                     messagebox.showinfo('No account found','No matching account was found, or the account service could not complete the search.')
-            elif kind=='admin_revoke':
-                messagebox.showinfo('Premium access', 'The server recorded the revocation.' if status=='ok' else 'Could not revoke Premium. Check database permissions.')
-                if status=='ok':self._load_admin_accounts()
+            elif kind in ('admin_grant','admin_revoke','admin_end_trial'):
+                messagebox.showinfo('Premium access',
+                    ('The server recorded the change. Refreshing membership now.' if status=='ok'
+                     else 'Could not update Premium: '+safe_text(value,180)), parent=self.root)
+                if status=='ok':
+                    self._load_admin_accounts()
+                    self._refresh_membership()
+            elif kind=='refresh_entitlement':
+                if status=='ok' and isinstance(value,dict) and 'tier' in value:
+                    if self.sovela_session:
+                        self.sovela_session.entitlement=value
+                    if getattr(self,'_account_open',False) and self._account_section=='Profile':
+                        self._build_account_page()
+                    try:self.premium_nav.configure(text='✦    PREMIUM' if self._entitled() else '🔒    PREMIUM')
+                    except (tk.TclError,AttributeError):pass
+                else:
+                    messagebox.showwarning('Membership refresh',
+                        'Could not refresh your membership. Check your connection, then try again.', parent=self.root)
             else:retained.append((kind,status,value))
         for item in retained:self.events.put(item)
         super().poll_events()
@@ -217,8 +270,17 @@ class SovelaV31(SovelaV3):
                 except tk.TclError:pass
 
     def _settings_select_page(self,page):
+        if page=='Account':
+            return self._open_account_from_settings()
         if page!='Credits':
-            return super()._settings_select_page(page)
+            result=super()._settings_select_page(page)
+            if page=='Appearance':
+                row=self._settings_row(self._settings_area,'Window rendering',
+                       'If the window flashes black when dragged, use native Windows rendering. Restart Sovela to apply.')
+                enabled=bool(self.preferences.get('safe_window_frame',False))
+                self._button(row,'Windows fallback: '+('On' if enabled else 'Off'),
+                    self._toggle_window_rendering,False,True).pack(side='right')
+            return result
         self._settings_page_name='Credits'
         for name,button in self._settings_tab_buttons.items():
             button.configure(bg='#D8ECE5' if name=='Credits' else '#F4F6F5',
@@ -237,7 +299,9 @@ class SovelaV31(SovelaV3):
             self._label(row,detail,9,color=SLATE_MUTED,wraplength=650).pack(anchor='w',pady=(3,0))
 
     def open_settings_sheet(self):
-        if getattr(self,'_settings_sheet',None) is not None:return
+        if getattr(self,'_settings_sheet',None) is not None:
+            self.close_settings_sheet()
+            return
         super().open_settings_sheet()
         tabs=getattr(self,'_settings_tab_buttons',{})
         if 'Credits' not in tabs and tabs:
@@ -246,18 +310,98 @@ class SovelaV31(SovelaV3):
                 size=10,bg='#F4F6F5',fg=SLATE_MUTED)
             button.pack(side='left',padx=(0,5))
             tabs['Credits']=button
+        # Account is a header shortcut, not a fifth tab that gets clipped at
+        # standard 990px window widths.
+        try:
+            sheet=self._settings_sheet
+            inner=sheet.winfo_children()[0]
+            heading=inner.winfo_children()[0]
+            btn=self.text_button(heading,'Account ↗',self._open_account_from_settings,
+                size=9,bg='#E3F2EB',fg=DEEP)
+            btn.pack(side='right',padx=(0,7))
+        except (IndexError,AttributeError,tk.TclError):
+            pass
+
+    def _toggle_window_rendering(self):
+        self.preferences['safe_window_frame']=not bool(self.preferences.get('safe_window_frame',False))
+        save_preferences(self.preferences)
+        messagebox.showinfo('Restart Sovela',
+            'Window rendering preference saved. Restart Sovela to apply it. '
+            'The Windows fallback shows a native title bar for compatibility.',
+            parent=self.root)
+        self._settings_select_page('Appearance')
+
+    def _open_account_from_settings(self):
+        if getattr(self,'_settings_sheet',None) is not None:
+            self.close_settings_sheet(animate=False)
+        self.account_sheet()
+
+    def _refresh_membership(self):
+        if self.sovela_session and self.account_client:
+            self.run_job('refresh_entitlement',
+                         lambda:self.account_client.entitlement(self.sovela_session))
+
+    def account_sheet(self):
+        was_open=getattr(self,'_account_open',False)
+        super().account_sheet()
+        if not was_open and getattr(self,'_account_open',False):
+            # Accounts can be changed from another device; never trust the
+            # sign-in-time membership snapshot indefinitely.
+            self._refresh_membership()
 
     def _build_account_page(self):
         super()._build_account_page()
         if self._account_section=='Profile':
             try:
-                # Upgrade CTA only if a VERIFIED server-approved payment workflow exists.
+                # The old v3.0 text said checkout was always disabled.
+                # Do not contradict the server-controlled current status.
+                def update_legacy_text(widget):
+                    if isinstance(widget,tk.Label):
+                        if 'Payment checkout is not enabled' in str(widget.cget('text')):
+                            widget.configure(text='Payment availability is shown below.')
+                    for child in widget.winfo_children():update_legacy_text(child)
+                update_legacy_text(self.view)
+                ent=(self.sovela_session.entitlement or {}) if self.sovela_session else {}
+                if ent.get('tier')=='premium' and ent.get('premium_until'):
+                    raw=str(ent['premium_until'])
+                    try:
+                        end=datetime.fromisoformat(raw.replace('Z','+00:00'))
+                        days=max(0,math.ceil((end-datetime.now(timezone.utc)).total_seconds()/86400))
+                        explanation=' · approximately '+str(days)+' day(s) left'
+                    except (ValueError,TypeError):
+                        explanation=''
+                    self._label(self.view,'Premium access through '+raw[:10]+explanation,
+                                9,color=SLATE_MUTED).pack(anchor='w',pady=(1,8))
+                if ent.get('tier')=='trial' and ent.get('trial_ends_at'):
+                    self._label(self.view,'Your original trial ends: '+str(ent['trial_ends_at'])[:10]+
+                                ' (an existing trial is not shortened by new-user promotions)',
+                                9,color=SLATE_MUTED).pack(anchor='w',pady=(1,8))
+                # Make billing visible while keeping purchase disabled until
+                # checkout + webhook have been end-to-end verified by the owner.
+                payment=tk.Frame(self.view,bg=WHITE,padx=16,pady=12,
+                                 highlightbackground='#C5DCD1',highlightthickness=1)
+                payment.pack(fill='x',pady=(6,0))
+                self._label(payment,'✦  PREMIUM PLANS',11,True,color=DEEP).pack(anchor='w')
+                self._label(payment,'Sovela Premium · £3.99/month (sandbox example price)',9,
+                            color=SLATE_MUTED).pack(anchor='w',pady=(5,5))
                 enabled=bool(self.global_config.get('payment_ready'))
                 if enabled and self.account_client and self.sovela_session:
-                    self._button(self.view,'Start secure Premium checkout ↗',
+                    self._button(payment,'Subscribe securely with Stripe ↗',
                         lambda:self.run_job('checkout',lambda:self.account_client.start_checkout(self.sovela_session)),
-                        True,True).pack(anchor='w')
-            except tk.TclError:pass
+                        True,True).pack(anchor='w',pady=(5,0))
+                else:
+                    disabled=tk.Button(payment,text='Subscribe · Not available yet',
+                        bg='#E4EAE7',fg='#6A7772',disabledforeground='#6A7772',
+                        state='disabled',relief='flat',font=(SLATE_FONT,10,'bold'),padx=12,pady=8)
+                    disabled.pack(anchor='w',pady=(5,4))
+                    self._label(payment,'Purchases are disabled while Stripe billing is tested. '
+                        'No card details are requested and nothing is charged.',9,
+                        color=SLATE_MUTED,wraplength=600).pack(anchor='w',pady=(5,0))
+                if self.sovela_session and self.account_client:
+                    self._button(payment,'↻ Refresh my membership',self._refresh_membership,
+                                False,True).pack(anchor='w',pady=(9,0))
+            except tk.TclError:
+                pass
         if self._account_section!='Admin':return
         # Replace the old simplistic admin list with an owner studio.
         try:
@@ -297,6 +441,11 @@ class SovelaV31(SovelaV3):
             self._admin_days.pack(side='left',padx=(9,14))
             self._button(row,'Give Premium',self._grant_verified,True,True).pack(side='left')
             self._button(row,'Revoke manual grant',self._revoke_verified,False,True).pack(side='left',padx=(8,0))
+            self._button(holder,'End free trial (separate action)',self._end_trial_verified,
+                         False,True).pack(anchor='w',pady=(10,0))
+            self._label(holder,'Manual grants, free trials and paid subscriptions are separate. '
+                        'Ending a trial is permanent and does not cancel Stripe billing.',9,
+                        color=SLATE_MUTED,wraplength=610).pack(anchor='w',pady=(7,0))
         else:
             mapping={
                 'Broadcast':('Global announcement','announcement',800,'This message appears on customer dashboards.'),
@@ -377,3 +526,14 @@ class SovelaV31(SovelaV3):
             'Remove the manually assigned Premium grant from '+str(user.get('email','this account'))+'? Paid subscriptions must be cancelled in Stripe separately. Existing free trials stay unchanged.'):
             return
         self.run_job('admin_revoke',lambda:self.account_client.admin_revoke(self.sovela_session,user['id']))
+
+    def _end_trial_verified(self):
+        user=self._selected_admin_user()
+        if not user:return
+        if not messagebox.askyesno('End free trial',
+                'Permanently end the free Premium trial for '+str(user.get('email','this account'))+'? '
+                'This is separate from manual grants and paid subscriptions. This cannot be undone automatically.',
+                parent=self.root):
+            return
+        self.run_job('admin_end_trial',
+            lambda:self.account_client.admin_end_trial(self.sovela_session,user['id']))
