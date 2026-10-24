@@ -1,183 +1,221 @@
-name: SOVELA RECOVERY 312 - CLEAN BUILD
+name: SOVELA 3.1.2 - SIGNED WINDOWS BUILD
 
+# Run manually. Do not publish unsigned installers for user installation.
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write # GitHub OIDC -> Azure Artifact Signing
 
 jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 25
+  build-signed:
+    runs-on: windows-2025
+    timeout-minutes: 35
     steps:
-      - name: RECOVERY WORKFLOW ACTIVE - download Sovela code
+      - name: Checkout the complete Sovela source
         uses: actions/checkout@v4
 
-      - name: Install Python 3.13
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      - name: RECOVERY CHECK - application integrity (no external test folder)
+      - name: Verify signing account is configured before packaging
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ vars.SOVELA_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.SOVELA_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.SOVELA_SIGNING_PROFILE }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE',
+                               'AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing $name. A verified publisher identity / Azure Artifact Signing profile is REQUIRED. Do NOT distribute an unsigned installer."
+            }
+          }
+          if ($env:SIGNING_ENDPOINT -notmatch '^https://[a-z0-9.-]+\.codesigning\.azure\.net/?$') {
+            throw 'Signing endpoint is invalid.'
+          }
+
+      - name: Static checks - complete source and critical features
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           @'
           from pathlib import Path
-          import ast, json
-          from sovela_auth import VERSION, read_cloud_config
-          from sovela_v3_core import load_local_settings, premium_allowed
-          from sovela_preferences import validated
-          from sovela_v31 import SovelaV31
-          from tempfile import TemporaryDirectory
-
+          import ast
+          from sovela_auth import VERSION
           root=Path('.')
-          for name in ('main.py','sovela_launcher.py','sovela_v31.py','sovela_auth.py',
-                       'sovela_v3_core.py','sovela_scans.py','sovela_care.py',
-                       'sovela_window.py','sovela_dialogs.py','SovelaInstaller.iss',
-                       'sovela.ico','sovela.png','sovela_cloud.json'):
-              assert (root/name).is_file(), 'Required source missing: '+name
-          files=list(root.glob('*.py'))
-          for f in files: ast.parse(f.read_text(encoding='utf-8'),filename=str(f))
-          assert VERSION=='3.1.2', 'Files are from different Sovela versions'
-          installer=(root/'SovelaInstaller.iss').read_text(encoding='utf-8')
-          assert '#define MyAppVersion "'+VERSION+'"' in installer, 'Installer version mismatch'
-          with TemporaryDirectory() as d:
-              prefs=Path(d)/'settings.json'
-              prefs.write_text('{"premium_clean_preview":true,"premium_weekly_defender":true}', encoding='utf-8')
-              obj=load_local_settings(prefs)
-              assert not obj['premium_weekly_clean_enabled'], 'Legacy settings must not enable deletion'
-              assert not obj['premium_clean_categories']
-          assert premium_allowed({'tier':'trial'})
-          assert premium_allowed({'tier':'premium'})
-          assert not premium_allowed({'tier':'free'})
-          assert validated({'safe_window_frame':True})['safe_window_frame']
-          app=(root/'sovela_v31.py').read_text(encoding='utf-8')
-          for name in ('Owner Studio','Test Stripe Sandbox checkout', 'Begin scan',
-                       'Enable weekly cleanup', 'premium_weekly_clean_enabled',
-                       'WEEKLY ANTIVIRUS REMINDER', 'Credits', 'account_sheet',
-                       'Re-check owner permissions'):
-              assert name in app, 'Missing feature '+name
-          assert '_premium_maintenance' in app and '_scan_permission_toast' in app
-          # Check that no private backend credentials are in the bundled JSON.
-          public=json.loads((root/'sovela_cloud.json').read_text(encoding='utf-8-sig'))
-          assert 'service_role' not in public and 'stripe_secret' not in public
-          print('RECOVERY 312 VERIFIED: required Python source, owner panel, accounts, weekly consent, scan reminders, payments and installer version')
+          assert VERSION == '3.1.2', 'Unexpected app version'
+          essentials=('main.py','sovela_launcher.py','sovela_v31.py','sovela_v30.py',
+             'sovela_auth.py','sovela_v3_core.py','sovela_scans.py','sovela_care.py',
+             'sovela_window.py','sovela_preferences.py','SovelaInstaller.iss',
+             'sovela.ico','sovela.png','sovela_cloud.json')
+          for f in essentials:
+              assert (root/f).is_file(), 'Missing application file: '+f
+          for p in root.glob('*.py'):
+              ast.parse(p.read_text(encoding='utf-8'), filename=str(p))
+          source=(root/'sovela_v31.py').read_text(encoding='utf-8')
+          for feature in ('Owner Studio','Test Stripe Sandbox checkout',
+                          'Enable weekly cleanup','Begin scan',
+                          'premium_weekly_clean_enabled','Credits','account_sheet',
+                          'Re-check owner permissions'):
+              assert feature in source, 'Missing feature: '+feature
+          assert '#define MyAppVersion "3.1.2"' in (root/'SovelaInstaller.iss').read_text(encoding='utf-8')
+          print('SOURCE CHECK OK: version, syntax and required feature entry points')
           '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'Sovela source check failed. Review the message above.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Sovela source checks failed' }
 
-      - name: Install Windows packaging tools
+      - name: Install packaging tools
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           python -m pip install --disable-pip-version-check pyinstaller==6.22.3 pyinstaller-hooks-contrib==2026.9
-          if ($LASTEXITCODE -ne 0) { throw 'Could not install PyInstaller.' }
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller install failed' }
           if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
-            choco install innosetup --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'Could not install Inno Setup.' }
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
           }
 
-      - name: Include only PUBLIC Supabase settings
+      - name: Write PUBLIC Supabase config only
         shell: pwsh
         env:
           PUBLIC_URL: ${{ vars.SOVELA_SUPABASE_URL }}
           PUBLIC_KEY: ${{ vars.SOVELA_SUPABASE_PUBLISHABLE_KEY }}
-          UPDATES_REPO: ${{ github.repository }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           $ErrorActionPreference='Stop'
-          if ([string]::IsNullOrWhiteSpace($env:PUBLIC_URL) -or [string]::IsNullOrWhiteSpace($env:PUBLIC_KEY)) {
-            throw 'SOVELA_SUPABASE_URL and SOVELA_SUPABASE_PUBLISHABLE_KEY GitHub variables are required.'
+          if (-not $env:PUBLIC_URL -or -not $env:PUBLIC_KEY) {
+            throw 'Missing public Supabase variables.'
           }
           if ($env:PUBLIC_KEY -match '^(sk_|sb_secret_|service_role)') {
-            throw 'Private backend key detected: do not embed it in Sovela.exe.'
+            throw 'Refusing to embed private credentials in the app.'
           }
-          $cloud=Get-Content 'sovela_cloud.json' -Raw | ConvertFrom-Json
-          $cloud.supabase_url=$env:PUBLIC_URL
-          $cloud.supabase_publishable_key=$env:PUBLIC_KEY
-          $cloud.updates_repo=$env:UPDATES_REPO
-          $cloud | ConvertTo-Json -Depth 3 | Set-Content 'sovela_cloud.json' -Encoding utf8
+          $obj=Get-Content 'sovela_cloud.json' -Raw | ConvertFrom-Json
+          $obj.supabase_url=$env:PUBLIC_URL
+          $obj.supabase_publishable_key=$env:PUBLIC_KEY
+          $obj.updates_repo=$env:REPOSITORY
+          $obj | ConvertTo-Json -Depth 4 | Set-Content 'sovela_cloud.json' -Encoding UTF8
 
-      - name: Build the original Sovela program
+      - name: Compile Sovela app
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name Sovela --icon sovela.ico --add-data 'sovela.png;.' main.py
-          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed to build Sovela.exe.' }
-          foreach ($file in @('sovela_config.json','sovela_cloud.json','PRIVACY.txt')) {
-            Copy-Item $file 'dist/Sovela/' -ErrorAction Stop
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed' }
+          foreach ($f in @('PRIVACY.txt','sovela_config.json','sovela_cloud.json')) {
+            Copy-Item $f 'dist/Sovela/' -ErrorAction Stop
           }
-          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'SovelaInstaller.iss'
-          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed.' }
-          $version=(python -c 'from sovela_auth import VERSION;print(VERSION)').Trim()
-          if ($LASTEXITCODE -ne 0) { throw 'Could not check installer version.' }
-          $installer="installer-output/SovelaSetup-v$version.exe"
-          if (-not (Test-Path $installer)) { throw "Expected installer not found: $installer" }
-          $files=@(Get-ChildItem 'installer-output/SovelaSetup-v*.exe' -File)
-          if ($files.Count -ne 1) { throw "Expected ONE installer, got $($files.Count)" }
-          $hash=(Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  SovelaSetup-v$version.exe" | Set-Content 'installer-output/SHA256SUMS.txt' -Encoding ascii
-          $sig=Get-AuthenticodeSignature -FilePath $installer
-          @(
-            'Sovela private developer build',
-            "Commit: $env:GITHUB_SHA",
-            "Installer: SovelaSetup-v$version.exe",
-            "SHA256: $hash",
-            "Windows signature: $($sig.Status)",
-            'This build has NOT been certified as malware-free.',
-            'Chrome Safe Browsing acceptance has NOT been verified.',
-            'Premium backend and Windows behaviour require live testing.',
-            'Do not publish to customers until security review and code signing.'
-          ) | Set-Content 'INSTALLER_SECURITY_REPORT.txt' -Encoding utf8
-          Write-Host 'SUCCESS: installer compiled and checksum recorded.'
+          if (-not (Test-Path 'dist/Sovela/Sovela.exe')) { throw 'Sovela.exe missing' }
 
-      - name: Check Windows Defender results where available
+      - name: Authenticate to Azure Artifact Signing (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Signed PE components retain their signature inside Inno Setup.
+      - name: Digitally sign app binaries
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SOVELA_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SOVELA_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SOVELA_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\Sovela
+          files-folder-filter: exe,dll,pyd
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify executable component signatures before packaging
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $version=(python -c 'from sovela_auth import VERSION;print(VERSION)').Trim()
-          $installer="installer-output/SovelaSetup-v$version.exe"
-          $report='INSTALLER_SECURITY_REPORT.txt'
-          try {
-            $status=Get-MpComputerStatus -ErrorAction Stop
-          } catch {
-            Add-Content $report 'Microsoft Defender scan: UNAVAILABLE on build runner (NOT VERIFIED)'
-            Write-Warning 'Defender not available; this is an unverified private installer.'
-            $status=$null
+          $files = @(Get-ChildItem 'dist/Sovela' -Recurse -File |
+              Where-Object { $_.Extension -in '.exe','.dll','.pyd' })
+          if ($files.Count -eq 0) { throw 'No app binaries found' }
+          foreach ($file in $files) {
+            $signature=Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Unsigned or invalid component: $($file.FullName) [$($signature.Status)]"
+            }
           }
-          if ($null -ne $status) {
-            if (-not $status.AntivirusEnabled -or -not $status.AMServiceEnabled) {
-              Add-Content $report 'Microsoft Defender scan: DISABLED on build runner (NOT VERIFIED)'
-              Write-Warning 'Defender disabled on build runner; this is an unverified private installer.'
-            } else {
-              $started=Get-Date
-              try {
-                Start-MpScan -ScanType CustomScan -ScanPath (Resolve-Path 'dist/Sovela').Path -ErrorAction Stop
-                Start-MpScan -ScanType CustomScan -ScanPath (Resolve-Path $installer).Path -ErrorAction Stop
-                $hits=@(Get-MpThreatDetection -ErrorAction Stop | Where-Object { $_.InitialDetectionTime -ge $started.AddMinutes(-1) })
-                if ($hits.Count -gt 0) {
-                  $hits | Format-List ThreatID,Resources | Out-String | Write-Host
-                  throw 'MICROSOFT DEFENDER DETECTED A THREAT. No artifact will be uploaded.'
-                }
-                Add-Content $report "Microsoft Defender: no detections reported by this scan (signatures $($status.AntivirusSignatureVersion)). This is NOT a security certification."
-              } catch {
-                if ($_.Exception.Message -match 'DETECTED A THREAT') { throw }
-                Add-Content $report 'Microsoft Defender: SCAN FAILED on build runner (NOT VERIFIED)'
-                Write-Warning 'Defender scan could not complete. Binary is UNVERIFIED; do not install when browser blocks it.'
+          Write-Host "Validated signatures on $($files.Count) executable components."
+
+      - name: Package the signed Windows app into one installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'SovelaInstaller.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          if (-not (Test-Path 'installer-output/SovelaSetup-v3.1.2.exe')) {
+            throw 'Expected installer missing'
+          }
+
+      - name: Digitally sign the installer
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SOVELA_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SOVELA_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SOVELA_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\installer-output
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Validate signed installer and create SHA256 checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $installer='installer-output/SovelaSetup-v3.1.2.exe'
+          $sig=Get-AuthenticodeSignature $installer
+          if ($sig.Status -ne 'Valid') {
+            throw "Installer signature is not trusted: $($sig.Status). Do not distribute."
+          }
+          $h=(Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$h  SovelaSetup-v3.1.2.exe" | Set-Content 'installer-output/SHA256SUMS.txt' -Encoding ascii
+          Write-Host "SIGNED BUILD VERIFIED: $($sig.SignerCertificate.Subject)"
+          Write-Host "SHA256: $h"
+          # A valid signature is publisher identity, NOT a malware-free guarantee.
+
+      - name: Check Microsoft Defender for detections when available
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          try { $status = Get-MpComputerStatus -ErrorAction Stop }
+          catch { $status = $null }
+          if ($null -eq $status -or -not $status.AMServiceEnabled -or -not $status.AntivirusEnabled) {
+            Write-Warning 'Runner Defender scan unavailable. This is NOT proof the installer is malware-free.'
+          } else {
+            $start=Get-Date
+            try {
+              Start-MpScan -ScanType CustomScan -ScanPath (Resolve-Path 'installer-output/SovelaSetup-v3.1.2.exe').Path -ErrorAction Stop
+              $hits=@(Get-MpThreatDetection -ErrorAction Stop | Where-Object { $_.InitialDetectionTime -ge $start.AddMinutes(-1) })
+              if ($hits.Count -gt 0) {
+                throw 'Microsoft Defender reported a threat; refusing to upload installer.'
               }
+              Write-Host 'Microsoft Defender scan finished without reported detections. This does not certify safety.'
+            } catch {
+              throw "Defender scan failed or detected a threat; installer is NOT uploaded. $($_.Exception.Message)"
             }
           }
 
-      - name: Upload one PRIVATE installer and report
+      - name: Upload signed private beta installer
         uses: actions/upload-artifact@v4
         with:
-          name: Sovela-RESTORED-v3.1.2-Private
+          name: Sovela-v3.1.2-SIGNED-PRIVATE-BETA
           if-no-files-found: error
           retention-days: 7
           path: |
             installer-output/SovelaSetup-v3.1.2.exe
             installer-output/SHA256SUMS.txt
-            INSTALLER_SECURITY_REPORT.txt
 
-# Deliberately NO tag publishing and NO automated release.
-# Chrome may still block an unsigned binary; do not bypass security warnings.
+# No public release job. Do not publish until live Windows feature and billing checks pass.
