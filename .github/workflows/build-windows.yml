@@ -19,24 +19,28 @@ jobs:
           python-version: '3.13'
 
       - name: Install packaging tools
-        run: python -m pip install pyinstaller
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pyinstaller
+          choco install innosetup --yes --no-progress
 
-      - name: Configure Sovela
+      - name: Configure public settings for customer app
         shell: pwsh
         env:
           PUBLIC_SUPABASE_URL: ${{ vars.SOVELA_SUPABASE_URL }}
           PUBLIC_SUPABASE_KEY: ${{ vars.SOVELA_SUPABASE_PUBLISHABLE_KEY }}
+          SOVELA_UPDATES_REPO: ${{ github.repository }}
         run: |
           if (-not $env:PUBLIC_SUPABASE_URL -or -not $env:PUBLIC_SUPABASE_KEY) {
-            throw 'Missing Supabase repository variables.'
+            throw 'Missing SOVELA_SUPABASE_URL or SOVELA_SUPABASE_PUBLISHABLE_KEY in Actions repository variables.'
           }
           $settings = Get-Content sovela_cloud.json -Raw | ConvertFrom-Json
           $settings.supabase_url = $env:PUBLIC_SUPABASE_URL
           $settings.supabase_publishable_key = $env:PUBLIC_SUPABASE_KEY
-          $settings.updates_repo = '${{ github.repository }}'
+          $settings.updates_repo = $env:SOVELA_UPDATES_REPO
           $settings | ConvertTo-Json | Set-Content sovela_cloud.json -Encoding utf8
 
-      - name: Build Windows application
+      - name: Build Sovela.exe
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --windowed --onedir --name Sovela --icon sovela.ico --add-data "sovela.png;." main.py
@@ -45,16 +49,39 @@ jobs:
           Copy-Item PRIVACY.txt dist/Sovela/PRIVACY.txt
           Compress-Archive -Path dist/Sovela -DestinationPath Sovela-Windows.zip
 
-      - name: Upload application
-        uses: actions/upload-artifact@v4
-        with:
-          name: Sovela-Windows
-          path: Sovela-Windows.zip
-
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Build Windows installer
         shell: pwsh
         run: |
-          gh release create "${{ github.ref_name }}" Sovela-Windows.zip --title "Sovela ${{ github.ref_name }}" --notes "Sovela PC Care preview."
+          $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $compiler)) {
+            throw 'Inno Setup compiler was not installed where expected.'
+          }
+          & $compiler 'SovelaInstaller.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Sovela installer build failed.' }
+          if (-not (Test-Path 'installer-output\SovelaSetup-v3.0.0.exe')) {
+            throw 'Expected installer was not produced.'
+          }
+
+      - name: Create integrity hashes
+        shell: pwsh
+        run: |
+          (Get-FileHash 'Sovela-Windows.zip' -Algorithm SHA256).Hash.ToLower() | Set-Content 'Sovela-Windows.zip.sha256'
+          (Get-FileHash 'installer-output\SovelaSetup-v3.0.0.exe' -Algorithm SHA256).Hash.ToLower() | Set-Content 'installer-output\SovelaSetup-v3.0.0.exe.sha256'
+
+      - name: Upload installer and portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sovela-Windows-and-Installer
+          path: |
+            Sovela-Windows.zip
+            Sovela-Windows.zip.sha256
+            installer-output/SovelaSetup-v3.0.0.exe
+            installer-output/SovelaSetup-v3.0.0.exe.sha256
+
+      - name: Publish release on a version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "Sovela-Windows.zip" "Sovela-Windows.zip.sha256" "installer-output/SovelaSetup-v3.0.0.exe" "installer-output/SovelaSetup-v3.0.0.exe.sha256" --title "Sovela ${{ github.ref_name }}" --notes "Sovela PC Care developer preview. Installer is unsigned; test privately before public distribution."
