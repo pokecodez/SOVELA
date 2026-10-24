@@ -211,7 +211,10 @@ class SovelaV31(SovelaV3):
             elif kind=='checkout':
                 if status=='ok' and isinstance(value,str) and value.startswith('https://checkout.stripe.com/'):
                     webbrowser.open(value)
-                else:messagebox.showerror('Checkout unavailable','Premium billing is not available yet. No payment was taken.')
+                else:messagebox.showerror('Sandbox checkout unavailable',
+                    'The test checkout could not open. Check your internet connection and '
+                    'the Supabase create-checkout function. No purchase was completed.',
+                    parent=self.root)
             elif kind=='admin_find':
                 if status=='ok' and isinstance(value,dict) and value.get('id'):
                     self._admin_accounts=[value]
@@ -294,6 +297,34 @@ class SovelaV31(SovelaV3):
                     w.configure(cursor='hand2')
                     w.bind('<Button-1>',lambda _e,d=destination:self.show_tab(d))
                 except tk.TclError:pass
+
+    def _root_view(self, pad=24):
+        # Account pages can be taller than the application window. Give them a
+        # scrollbar without changing the existing view/widget hierarchy.
+        if getattr(self, 'current_tab', '') != 'Account':
+            return super()._root_view(pad)
+        canvas=tk.Canvas(self.body,bg=SLATE_BG,bd=0,highlightthickness=0)
+        scroll=tk.Scrollbar(self.body,orient='vertical',command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right',fill='y')
+        canvas.pack(side='left',fill='both',expand=True)
+        self._account_scroll_canvas=canvas
+        self.view=tk.Frame(canvas,bg=SLATE_BG,padx=pad,pady=19)
+        window=canvas.create_window((0,0),window=self.view,anchor='nw')
+        self.view.bind('<Configure>',lambda _event:canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>',lambda event:canvas.itemconfigure(window,width=event.width))
+
+    def on_global_wheel(self,event):
+        canvas=getattr(self,'_account_scroll_canvas',None)
+        if getattr(self,'current_tab','')=='Account' and canvas is not None:
+            try:
+                x,y=canvas.winfo_rootx(),canvas.winfo_rooty()
+                if x <= event.x_root < x+canvas.winfo_width() and y <= event.y_root < y+canvas.winfo_height():
+                    canvas.yview_scroll(-int(event.delta/120) if event.delta else 0,'units')
+                    return
+            except tk.TclError:
+                pass
+        return super().on_global_wheel(event)
 
     def _settings_select_page(self,page):
         if page=='Account':
@@ -446,10 +477,13 @@ class SovelaV31(SovelaV3):
                     if self._is_admin:
                         self._button(actions,'Open Owner Studio →',
                             lambda:self._change_account_section('Admin'),True,True).pack(side='left',padx=(8,0))
-                        self._button(access,'Test Stripe Sandbox checkout ↗',self._owner_test_checkout,
-                            False,True).pack(anchor='w',pady=(10,0))
-                        self._label(access,'Owner testing only. Use Stripe test card details. '
-                           'Never enter a real card.',9,color=SLATE_MUTED,wraplength=585).pack(anchor='w',pady=(3,0))
+                    # Sandbox testing is NOT an administrator operation.
+                    # Supabase checkout still requires a verified logged-in user.
+                    self._button(access,'Test Stripe Sandbox checkout ↗',self._owner_test_checkout,
+                        False,True).pack(anchor='w',pady=(10,0))
+                    self._label(access,'Developer preview: use only a Stripe Sandbox test card. '
+                        'Never enter a real card. Your login is required, not the owner role.',
+                        9,color=SLATE_MUTED,wraplength=585).pack(anchor='w',pady=(3,0))
             except tk.TclError:
                 pass
         if self._account_section!='Admin':return
@@ -598,7 +632,12 @@ class SovelaV31(SovelaV3):
         self.run_job('admin_status',lambda:self.account_client.admin_status(self.sovela_session))
 
     def _owner_test_checkout(self):
-        if not (self._is_admin and self.sovela_session and self.account_client):
+        # Do not gate a simulated payment on the admin role. The server
+        # authenticates each user independently before creating checkout.
+        if not (self.sovela_session and self.account_client):
+            messagebox.showwarning('Sign in required',
+                'Sign in to your verified Sovela account before testing checkout.',
+                parent=self.root)
             return
         if not messagebox.askyesno('Sovela · Stripe Sandbox test',
             'Open a Stripe checkout for TESTING ONLY?\n\n'

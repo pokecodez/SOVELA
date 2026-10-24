@@ -525,8 +525,18 @@ class SovelaCareApp(SovelaPCApp):
             self._save_prefs()
 
     def _save_prefs(self):
-        try:save(self.preferences)
-        except OSError:pass
+        try:
+            save(self.preferences)
+            return True
+        except OSError:
+            # Never silently claim that a setting was saved when disk writes fail.
+            if not getattr(self,'_preferences_save_warning_shown',False):
+                self._preferences_save_warning_shown=True
+                messagebox.showwarning('Sovela · Preferences not saved',
+                    'Windows could not save your preferences. Your changes may be lost when Sovela closes. '
+                    'Check that your Windows profile has free storage and permission to write app data.',
+                    parent=self.root)
+            return False
 
     def _reset_settings(self):
         if not messagebox.askyesno('Reset preferences','Reset Sovela appearance and alert preferences to their defaults?',parent=self.root):

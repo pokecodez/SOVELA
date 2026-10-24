@@ -309,10 +309,22 @@ class SovelaPolishedApp(SovelaCareApp):
                                  size=10,bg=LITE,fg=SLATE_MUTED)
             btn.pack(side='left',padx=(0,8),ipadx=4)
             self._settings_tab_buttons[title]=btn
-        self._settings_area=tk.Frame(inner,bg=WHITE)
-        self._settings_area.pack(fill='both',expand=True)
+        # Footer stays visible; settings rows scroll rather than disappearing
+        # below the bottom edge on smaller Windows displays.
         footer=tk.Frame(inner,bg=WHITE)
         footer.pack(side='bottom',fill='x',pady=(8,0))
+        content=tk.Frame(inner,bg=WHITE)
+        content.pack(fill='both',expand=True)
+        canvas=tk.Canvas(content,bg=WHITE,bd=0,highlightthickness=0)
+        bar=tk.Scrollbar(content,orient='vertical',command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side='right',fill='y')
+        canvas.pack(side='left',fill='both',expand=True)
+        self._settings_area=tk.Frame(canvas,bg=WHITE)
+        window=canvas.create_window((0,0),window=self._settings_area,anchor='nw')
+        self._settings_scroll_canvas=canvas
+        self._settings_area.bind('<Configure>',lambda _e:canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>',lambda e:canvas.itemconfigure(window,width=e.width))
         tk.Frame(footer,bg=SLATE_LINE,height=1).pack(fill='x',pady=(0,9))
         tk.Label(footer,text='Saved automatically on this computer',bg=WHITE,
                  fg=SLATE_MUTED,font=(SLATE_FONT,9)).pack(anchor='w',pady=(0,9))
@@ -366,6 +378,10 @@ class SovelaPolishedApp(SovelaCareApp):
             self._settings_dropdown(area,'Alert display time','notification_seconds',(6,10,15),
                                     'How long scan result cards remain visible.',suffix=' sec')
         self.root.update_idletasks()
+        canvas=getattr(self,'_settings_scroll_canvas',None)
+        if canvas is not None and canvas.winfo_exists():
+            canvas.configure(scrollregion=canvas.bbox('all'))
+            canvas.yview_moveto(0)
 
     def _settings_row(self,parent,title,helper,height=68):
         row=tk.Frame(parent,bg=WHITE,height=height)

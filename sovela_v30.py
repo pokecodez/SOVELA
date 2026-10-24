@@ -423,12 +423,23 @@ class SovelaV3(SovelaAccountsApp):
             status=self._label(c,'Connected' if self.gemini_key.get() else 'Not connected',10,color=SLATE_GREEN if self.gemini_key.get() else SLATE_MUTED)
             status.pack(anchor='w',pady=(10,12))
             def save_key():
-                try:self.gemini_key.save(field.get().strip())
-                except Exception:
-                    messagebox.showerror('Personal AI','Could not save the key. Use a valid Google AI Studio key on Windows.',parent=self.root);return
-                field.delete(0,'end');status.configure(text='Connected',fg=SLATE_GREEN)
+                key=field.get().strip()
+                try:
+                    self.gemini_key.save(key)
+                    if self.gemini_key.get()!=key:
+                        raise OSError('Stored key could not be read back')
+                except (ValueError,OSError):
+                    messagebox.showerror('Sovela · Personal AI',
+                        'Your key could not be saved and verified. Check that it is a valid Gemini API key '
+                        'and that Windows permits Sovela to store encrypted settings.',parent=self.root)
+                    return
+                field.delete(0,'end');status.configure(text='Saved securely on this PC',fg=SLATE_GREEN)
             def delete_key():
-                self.gemini_key.remove();status.configure(text='Not connected',fg=SLATE_MUTED)
+                try:self.gemini_key.remove()
+                except OSError:
+                    messagebox.showerror('Sovela · Personal AI','Could not remove your saved key.',parent=self.root)
+                    return
+                status.configure(text='Not connected',fg=SLATE_MUTED)
             row=tk.Frame(c,bg=WHITE);row.pack(fill='x')
             self._button(row,'Connect',save_key,True,True).pack(side='left')
             self._button(row,'Disconnect',delete_key,False,True).pack(side='left',padx=8)
