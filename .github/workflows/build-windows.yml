@@ -1,15 +1,113 @@
-name: SOVELA 3.1.2 - SIGNED WINDOWS BUILD
+name: SOVELA 3.1.2 - PREVIEW OR SIGNED BUILD
 
-# Run manually. Do not publish unsigned installers for user installation.
+# Default: build a source preview for testing with official Python.
+# Signed EXE generation is opt-in only after obtaining a real trusted certificate.
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write # GitHub OIDC -> Azure Artifact Signing
+  id-token: write  # Only the signed job needs this when enabled.
 
 jobs:
+  source-preview:
+    name: Verify source and package safe developer preview
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Check Sovela source and version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import ast
+          from pathlib import Path
+          root = Path('.')
+          essential = ['main.py', 'sovela_launcher.py', 'sovela_auth.py',
+                       'sovela_v31.py', 'sovela_v30.py', 'sovela_window.py',
+                       'sovela_preferences.py', 'sovela_care.py',
+                       'RUN_SOVELA_SOURCE.bat', 'sovela.png', 'sovela.ico']
+          missing = [f for f in essential if not (root / f).is_file()]
+          if missing:
+              raise RuntimeError('Missing Sovela files: ' + ', '.join(missing) +
+                                 '. Upload the COMPLETE restored source, not only a patch.')
+          for file in root.glob('*.py'):
+              ast.parse(file.read_text(encoding='utf-8-sig'), filename=str(file))
+          source = (root / 'sovela_v31.py').read_text(encoding='utf-8-sig')
+          for feature in ('Owner Studio', 'Test Stripe Sandbox checkout',
+                          'Enable weekly cleanup', 'Begin scan', 'Credits'):
+              if feature not in source:
+                  raise RuntimeError('Missing feature entry point: ' + feature)
+          if 'VERSION = "3.1.2"' not in (root / 'sovela_auth.py').read_text(encoding='utf-8-sig'):
+              # Accept either quote style or annotated assignment.
+              import re
+              text=(root/'sovela_auth.py').read_text(encoding='utf-8-sig')
+              if not re.search(r'\bVERSION\s*=\s*[\"\']3\.1\.2[\"\']', text):
+                  raise RuntimeError('Expected Sovela version 3.1.2')
+          print('PASS: Python syntax, required files and feature entry points.')
+          print('This is NOT a live payment, Admin permission or Windows GUI test.')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Sovela source check failed' }
+
+      - name: Package runnable Python source (no unsigned EXE)
+        shell: pwsh
+        env:
+          PUBLIC_URL: ${{ vars.SOVELA_SUPABASE_URL }}
+          PUBLIC_KEY: ${{ vars.SOVELA_SUPABASE_PUBLISHABLE_KEY }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json, os, zipfile
+          from pathlib import Path
+          root=Path('.')
+          cfg=root/'sovela_cloud.json'
+          config=json.loads(cfg.read_text(encoding='utf-8-sig')) if cfg.exists() else {}
+          url=os.environ.get('PUBLIC_URL','').strip()
+          key=os.environ.get('PUBLIC_KEY','').strip()
+          if key.lower().startswith(('sk_', 'sb_secret_', 'service_role')):
+              raise RuntimeError('Refusing to bundle a private Supabase key')
+          if url and key:
+              config.update(supabase_url=url,supabase_publishable_key=key,updates_repo=os.environ.get('REPOSITORY',''))
+              print('Using PUBLIC Supabase project configuration.')
+          else:
+              print('PUBLIC Supabase variables missing. Sign-in will need configuration.')
+          zipname='Sovela_Source_Preview_v3.1.2.zip'
+          extensions={'.py','.json','.png','.ico','.txt','.md','.bat','.sql'}
+          with zipfile.ZipFile(zipname,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as archive:
+              for f in root.iterdir():
+                  if f.is_file() and f.suffix.lower() in extensions and not f.name.startswith('.'):
+                      if f.name=='sovela_cloud.json':
+                          archive.writestr(f.name,json.dumps(config,indent=2))
+                      else:
+                          archive.write(f,f.name)
+          with zipfile.ZipFile(zipname) as archive:
+              assert archive.testzip() is None
+              assert 'RUN_SOVELA_SOURCE.bat' in archive.namelist()
+              assert 'main.py' in archive.namelist()
+          print('Created '+zipname+'; run RUN_SOVELA_SOURCE.bat with official Python installed.')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Source ZIP packaging failed' }
+
+      - name: Upload source preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sovela-v3.1.2-Source-Preview
+          path: Sovela_Source_Preview_v3.1.2.zip
+          if-no-files-found: error
+          retention-days: 7
+
   build-signed:
+    needs: source-preview
+    if: ${{ vars.SOVELA_ENABLE_SIGNED_BUILD == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 35
     steps:
