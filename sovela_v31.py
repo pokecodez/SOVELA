@@ -9,6 +9,8 @@ import math
 from datetime import datetime, timezone
 import tkinter as tk
 import webbrowser
+from sovela_care import scan_cleanup, clean_selected
+from sovela_v3_core import save_local_settings, reminder_due
 from tkinter import messagebox
 from sovela_window import begin_windows_titlebar_drag
 from sovela_preferences import save as save_preferences
@@ -39,6 +41,7 @@ class SovelaV31(SovelaV3):
         self._remote_minimum=(0,0,0)
         self._update_gate=False
         self._admin_config={}
+        self._owner_status='Checking owner permissions…' if session and account_client else 'Sign in to check owner access.'
         self._native_titlebar_drag=False
         super().__init__(root,session,account_client,updates_repo or REPO)
         self.root.title('Sovela | PC Care '+VERSION)
@@ -170,6 +173,29 @@ class SovelaV31(SovelaV3):
                     elif self.current_tab=='Overview':
                         SovelaV3.show_tab(self,'Overview')
                         self._sync_nav_state()
+            elif kind=='premium_weekly_cleanup':
+                self.care_busy=False
+                if status=='ok':
+                    self.local_options['last_weekly_cleanup']=datetime.now(timezone.utc).isoformat()
+                    save_local_settings(self.local_options)
+                    count=value.get('recycled',0) if isinstance(value,dict) else 0
+                    self.record_activity(f'Weekly selected cleanup: {count} item(s) moved to Recycle Bin')
+                    if getattr(self,'current_tab','')=='Premium':self.open_premium()
+                else:
+                    self.record_activity('Weekly cleanup skipped: '+safe_text(value,140))
+            elif kind=='admin_status':
+                self._is_admin=(status=='ok' and value is True)
+                if self._is_admin:
+                    self._owner_status='Owner access verified by Supabase.'
+                    self.run_job('admin_config',lambda:self.account_client.admin_config(self.sovela_session))
+                elif status=='ok':
+                    self._owner_status='This signed-in account does not have owner permissions on the server.'
+                else:
+                    self._owner_status='Owner check could not complete: '+safe_text(value,160)
+                if getattr(self,'_account_open',False):
+                    if not self._is_admin and self._account_section=='Admin':
+                        self._account_section='Profile'
+                    self._build_account_page()
             elif kind=='admin_config':
                 if status=='ok' and isinstance(value,dict):
                     self._admin_config=value
@@ -351,6 +377,13 @@ class SovelaV31(SovelaV3):
 
     def _build_account_page(self):
         super()._build_account_page()
+        # Reachable even when a long Profile section extends below the viewport.
+        if self.sovela_session and self.account_client:
+            try:
+                header=self.view.winfo_children()[0]
+                self._button(header,'↻ Check owner access',self._retry_owner_status,
+                             False,True).pack(side='right',padx=(0,8))
+            except (IndexError,tk.TclError):pass
         if self._account_section=='Profile':
             try:
                 # The old v3.0 text said checkout was always disabled.
@@ -400,6 +433,23 @@ class SovelaV31(SovelaV3):
                 if self.sovela_session and self.account_client:
                     self._button(payment,'↻ Refresh my membership',self._refresh_membership,
                                 False,True).pack(anchor='w',pady=(9,0))
+                if self.sovela_session and self.account_client:
+                    access=tk.Frame(self.view,bg=WHITE,padx=16,pady=12,
+                                    highlightbackground='#C5DCD1',highlightthickness=1)
+                    access.pack(fill='x',pady=(8,0))
+                    self._label(access,'OWNER ACCESS',10,True,color=DEEP).pack(anchor='w')
+                    self._label(access,self._owner_status,9,color=SLATE_MUTED,
+                                wraplength=600).pack(anchor='w',pady=(5,9))
+                    actions=tk.Frame(access,bg=WHITE);actions.pack(fill='x')
+                    self._button(actions,'Re-check owner permissions',self._retry_owner_status,
+                                 False,True).pack(side='left')
+                    if self._is_admin:
+                        self._button(actions,'Open Owner Studio →',
+                            lambda:self._change_account_section('Admin'),True,True).pack(side='left',padx=(8,0))
+                        self._button(access,'Test Stripe Sandbox checkout ↗',self._owner_test_checkout,
+                            False,True).pack(anchor='w',pady=(10,0))
+                        self._label(access,'Owner testing only. Use Stripe test card details. '
+                           'Never enter a real card.',9,color=SLATE_MUTED,wraplength=585).pack(anchor='w',pady=(3,0))
             except tk.TclError:
                 pass
         if self._account_section!='Admin':return
@@ -537,3 +587,208 @@ class SovelaV31(SovelaV3):
             return
         self.run_job('admin_end_trial',
             lambda:self.account_client.admin_end_trial(self.sovela_session,user['id']))
+
+    def _retry_owner_status(self):
+        """Always ask the server; a matching email string is NOT an admin role."""
+        if not self.sovela_session or not self.account_client:
+            return
+        self._owner_status='Checking owner permissions with Supabase…'
+        if getattr(self,'_account_open',False):
+            self._build_account_page()
+        self.run_job('admin_status',lambda:self.account_client.admin_status(self.sovela_session))
+
+    def _owner_test_checkout(self):
+        if not (self._is_admin and self.sovela_session and self.account_client):
+            return
+        if not messagebox.askyesno('Sovela · Stripe Sandbox test',
+            'Open a Stripe checkout for TESTING ONLY?\n\n'
+            'Make sure your Supabase STRIPE_SECRET_KEY begins with sk_test_. '
+            'Use only Stripe test-card details. Do not enter your real bank card.\n\n'
+            'This verifies checkout, not yet automatic membership activation.',parent=self.root):
+            return
+        self.run_job('checkout',lambda:self.account_client.start_checkout(self.sovela_session))
+
+    # v3.1.2: separate automated CLEANING from opt-in SCAN PROMPTS.
+    # Never interpret the legacy preview-only switch as consent to delete.
+    _CLEAN_GROUPS=(
+        ('temp','Old temporary files','Older than 7 days · your personal temp folder'),
+        ('cache','Browser cache','Old cached files only · browsers must be closed'),
+        ('reports','Archived crash reports','Windows Error Reporting archives older than 30 days'),
+        ('dumps','Old crash dumps','Personal application dump files older than 30 days'))
+
+    def _premium_page(self):
+        self._page_header('✦  Premium care',
+                          'Set up weekly PC maintenance your way.')
+        e,card=self._surface(self.view,padding=20);e.pack(fill='x',pady=(0,12))
+        self._label(card,'WEEKLY AUTOMATIC CLEANUP',11,True,color=DEEP).pack(anchor='w')
+        self._label(card,'You decide which safe categories Sovela can tidy each week. '
+            'Eligible old files go to the Windows Recycle Bin; nothing touches Documents, '
+            'Downloads or browser cookies.',10,color=SLATE_MUTED,wraplength=640).pack(anchor='w',pady=(6,10))
+        enabled=bool(self.local_options.get('premium_weekly_clean_enabled'))
+        categories=self.local_options.get('premium_clean_categories',[])
+        summary=', '.join(label for key,label,_ in self._CLEAN_GROUPS if key in categories) or 'No categories selected'
+        self._label(card,'STATUS  '+('ENABLED' if enabled else 'OFF'),10,True,
+                   color=SLATE_GREEN if enabled else SLATE_MUTED).pack(anchor='w',pady=(4,4))
+        self._label(card,'Selected: '+summary,9,color=SLATE_MUTED,wraplength=620).pack(anchor='w')
+        row=tk.Frame(card,bg=WHITE);row.pack(fill='x',pady=(13,0))
+        self._button(row,'Manage weekly cleanup' if enabled else 'Enable weekly cleanup',
+                     self._weekly_cleanup_setup,True,True).pack(side='left')
+        if enabled:
+            self._button(row,'Disable',self._disable_weekly_cleanup,False,True).pack(side='left',padx=(8,0))
+            self._button(row,'Clean selected categories now',
+                         self._run_weekly_cleanup_now,False,True).pack(side='left',padx=(8,0))
+        e,card=self._surface(self.view,padding=20);e.pack(fill='x',pady=(0,12))
+        self._label(card,'WEEKLY ANTIVIRUS REMINDER',11,True,color=DEEP).pack(anchor='w')
+        self._label(card,'Once a week Sovela asks if now is a good time to start '
+            'a Windows Defender quick scan. It NEVER starts without your pressing Begin.',
+            10,color=SLATE_MUTED,wraplength=630).pack(anchor='w',pady=(7,12))
+        row=tk.Frame(card,bg=WHITE);row.pack(fill='x')
+        self._label(row,'Ask me each week',10,True).pack(side='left')
+        self._v3_switch(row,'premium_weekly_defender').pack(side='right')
+        self._label(card,'Reminders appear while Sovela is running. No background service '
+                    'is installed.',9,color=SLATE_MUTED,wraplength=630).pack(anchor='w',pady=(8,0))
+        e,card=self._surface(self.view,padding=16);e.pack(fill='x')
+        row=tk.Frame(card,bg=WHITE);row.pack(fill='x')
+        self._button(row,'Open Cleaner',lambda:self.show_tab('Cleaner'),False,True).pack(side='left')
+        self._button(row,'Open Malware Scan',lambda:self.show_tab('Malware Scan'),False,True).pack(side='left',padx=8)
+
+    def _toggle_local(self,key,btn=None):
+        # Previously enabling the Defender switch would schedule an unprompted scan.
+        # It now schedules ONLY a prompt, beginning seven days after enabling.
+        if key=='premium_weekly_defender' and not self.local_options.get(key,False):
+            self.local_options['last_scan_prompt']=datetime.now(timezone.utc).isoformat()
+        super()._toggle_local(key,btn)
+
+    def _weekly_cleanup_setup(self):
+        if not self._entitled():
+            return self.account_sheet()
+        top=tk.Toplevel(self.root)
+        top.title('Sovela · Weekly cleanup preferences')
+        top.configure(bg='#F2F7F5');top.resizable(False,False)
+        top.transient(self.root);top.grab_set()
+        top.geometry('590x575')
+        self.root.update_idletasks()
+        top.geometry('+%d+%d'%(self.root.winfo_rootx()+max(0,(self.root.winfo_width()-590)//2),
+                               self.root.winfo_rooty()+max(0,(self.root.winfo_height()-575)//2)))
+        title=tk.Frame(top,bg=DEEP,padx=24,pady=20);title.pack(fill='x')
+        tk.Label(title,text='✦  PERSONALISE YOUR WEEKLY CLEANUP',
+                 bg=DEEP,fg=MINT,font=(SLATE_FONT,10,'bold')).pack(anchor='w')
+        tk.Label(title,text='What should Sovela clean?',bg=DEEP,fg='white',
+                 font=(SLATE_FONT,19,'bold')).pack(anchor='w',pady=(7,3))
+        tk.Label(title,text='Choose exactly which categories to tidy every 7 days.',
+                 bg=DEEP,fg='#CBDFDA',font=(SLATE_FONT,10)).pack(anchor='w')
+        content=tk.Frame(top,bg='#F2F7F5',padx=22,pady=15);content.pack(fill='both',expand=True)
+        currently=set(self.local_options.get('premium_clean_categories',[]))
+        vars={}
+        for key,label,detail in self._CLEAN_GROUPS:
+            row=tk.Frame(content,bg='white',highlightbackground='#D5E7DD',highlightthickness=1,
+                         padx=12,pady=9);row.pack(fill='x',pady=4)
+            var=tk.BooleanVar(value=key in currently);vars[key]=var
+            tk.Checkbutton(row,text=label,variable=var,bg='white',fg=DEEP,
+                  activebackground='white',selectcolor='white',bd=0,
+                  font=(SLATE_FONT,11,'bold'),anchor='w').pack(anchor='w')
+            tk.Label(row,text=detail,bg='white',fg='#627C75',
+                     font=(SLATE_FONT,9),anchor='w').pack(anchor='w',padx=23)
+        tk.Label(content,text='Only eligible aged files are moved to the Windows Recycle Bin. '
+            'Browser cache is skipped while a browser is open. Cleanup runs only '
+            'when Sovela is open and you have Premium.',wraplength=530,justify='left',
+            fg='#627C75',bg='#F2F7F5',font=(SLATE_FONT,9)).pack(anchor='w',pady=(12,10))
+        controls=tk.Frame(content,bg='#F2F7F5');controls.pack(fill='x')
+        def save():
+            choice=[key for key in vars if vars[key].get()]
+            if not choice:
+                messagebox.showwarning('Sovela · Choose a category',
+                    'Select at least one category or cancel to keep cleanup disabled.',parent=top)
+                return
+            if not messagebox.askyesno('Enable weekly automatic cleanup',
+                'Every 7 days while Sovela is open, eligible old files in the chosen '
+                'categories will be moved to the Windows Recycle Bin WITHOUT another confirmation.\n\n'
+                'You can disable this at any time. Enable it?',parent=top):return
+            self.local_options['premium_clean_categories']=choice
+            self.local_options['premium_weekly_clean_enabled']=True
+            self.local_options['last_weekly_cleanup']=datetime.now(timezone.utc).isoformat()
+            save_local_settings(self.local_options)
+            top.destroy()
+            if self.current_tab=='Premium':self.open_premium()
+        tk.Button(controls,text='Cancel',command=top.destroy,font=(SLATE_FONT,10),
+                  bg='#DCE8E3',fg=DEEP,relief='flat',padx=17,pady=9).pack(side='right')
+        tk.Button(controls,text='Enable weekly cleanup',command=save,font=(SLATE_FONT,10,'bold'),
+                  bg=DEEP,fg='white',activebackground=DEEP2,activeforeground='white',
+                  relief='flat',padx=15,pady=9).pack(side='right',padx=10)
+
+    def _disable_weekly_cleanup(self):
+        self.local_options['premium_weekly_clean_enabled']=False
+        save_local_settings(self.local_options)
+        if self.current_tab=='Premium':self.open_premium()
+
+    def _run_weekly_cleanup_now(self):
+        if not messagebox.askyesno('Clean selected categories now',
+            'Scan the selected categories and recycle eligible old files now? '
+            'This cannot be fully undone if the Windows Recycle Bin has been emptied.',
+            parent=self.root):return
+        self._begin_selected_cleanup()
+
+    def _begin_selected_cleanup(self):
+        if not self._entitled() or not self.local_options.get('premium_weekly_clean_enabled'):
+            return False
+        categories=set(self.local_options.get('premium_clean_categories',[]))
+        categories.intersection_update({'temp','cache','reports','dumps'})
+        if not categories or getattr(self,'care_busy',False):return False
+        self.care_busy=True
+        def perform():
+            preview=scan_cleanup()
+            return clean_selected(preview,categories)
+        self.run_job('premium_weekly_cleanup',perform)
+        return True
+
+    def _weekly_maintenance(self):
+        # Independent clocks. A weekly Defender reminder NEVER starts a scan.
+        if not self.root.winfo_exists():return
+        if self._entitled() and self.local_options.get('premium_weekly_defender',False):
+            last=self.local_options.get('last_scan_prompt','')
+            if not last:
+                self.local_options['last_scan_prompt']=datetime.now(timezone.utc).isoformat()
+                save_local_settings(self.local_options)
+            elif reminder_due(last):
+                self.local_options['last_scan_prompt']=datetime.now(timezone.utc).isoformat()
+                save_local_settings(self.local_options)
+                self._scan_permission_toast()
+        if self._entitled() and self.local_options.get('premium_weekly_clean_enabled',False):
+            last=self.local_options.get('last_weekly_cleanup','')
+            if not last:
+                self.local_options['last_weekly_cleanup']=datetime.now(timezone.utc).isoformat()
+                save_local_settings(self.local_options)
+            elif reminder_due(last):
+                # Advance the seven-day clock only after successful completion;
+                # a failed recycle operation should be retried next time.
+                self._begin_selected_cleanup()
+        # Recheck while the app stays open over several days, not only at startup.
+        self.root.after(2*60*60*1000,self._weekly_maintenance)
+
+    def _premium_maintenance(self):
+        # Retired v3.0 scheduling hook. Weekly tasks are handled independently.
+        # Crucially, there is no unattended antivirus scan here.
+        return
+
+    def _scan_permission_toast(self):
+        if getattr(self,'_weekly_toast',None) is not None:return
+        popup=tk.Toplevel(self.root)
+        self._weekly_toast=popup
+        popup.overrideredirect(True);popup.attributes('-topmost',True)
+        popup.configure(bg='#A6CFC0')
+        card=tk.Frame(popup,bg=WHITE,padx=20,pady=17);card.pack(fill='both',expand=True,padx=1,pady=1)
+        self._label(card,'✦  SOVELA · WEEKLY SECURITY CHECK',10,True,color=DEEP).pack(anchor='w')
+        self._label(card,'Is now a good time for a Windows Defender quick scan?',11,True,
+                    wraplength=360).pack(anchor='w',pady=(10,6))
+        self._label(card,'Nothing will start unless you choose Begin scan.',9,
+                    color=SLATE_MUTED,wraplength=350).pack(anchor='w',pady=(0,12))
+        row=tk.Frame(card,bg=WHITE);row.pack(fill='x')
+        def begin():
+            self._close_weekly()
+            if self._entitled() and not self.device_scan_busy:
+                self.start_device_scan('quick')
+        self._button(row,'Begin scan',begin,True,True).pack(side='left')
+        self._button(row,'Later',self._close_weekly,False,True).pack(side='right')
+        left,top,right,bottom=self.work_area(self.root.winfo_x(),self.root.winfo_y())
+        popup.geometry(f'410x194+{max(left,right-430)}+{top+18}')
+        self._week_toast_job=self.root.after(30000,self._close_weekly)

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
-VERSION = '3.1.1'
+VERSION = '3.1.2'
 MAX_RESPONSE_BYTES = 1_000_000
 
 

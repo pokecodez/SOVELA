@@ -1,7 +1,7 @@
 ; Sovela Windows installer - Inno Setup 6
 ; Keep AppId unchanged in later versions so upgrades install over the same app.
 #define MyAppName "Sovela"
-#define MyAppVersion "3.1.1"
+#define MyAppVersion "3.1.2"
 #define MyAppExeName "Sovela.exe"
 
 [Setup]

@@ -26,18 +26,27 @@ def local_settings_path():
 def load_local_settings(path=None):
     defaults = {'updates_repo':'','weekly_reminders':True,
                 'premium_weekly_defender':False,'premium_clean_preview':False,
-                'last_weekly_reminder':'','last_maintenance':''}
+                'last_weekly_reminder':'','last_maintenance':'',
+                'premium_weekly_clean_enabled':False, 'premium_clean_categories':[],
+                'last_weekly_cleanup':'','last_scan_prompt':''}
     path=Path(path or local_settings_path())
     try:
         if path.stat().st_size > 10000:return defaults.copy()
         obj=json.loads(path.read_text('utf-8'))
         if isinstance(obj,dict):
             defaults['updates_repo']=valid_repo(obj.get('updates_repo',''))
-            for key in ('weekly_reminders','premium_weekly_defender','premium_clean_preview'):
+            for key in ('weekly_reminders','premium_weekly_defender','premium_clean_preview',
+                        'premium_weekly_clean_enabled'):
                 if type(obj.get(key)) is bool:defaults[key]=obj[key]
-            for key in ('last_weekly_reminder','last_maintenance'):
+            for key in ('last_weekly_reminder','last_maintenance','last_weekly_cleanup','last_scan_prompt'):
                 if isinstance(obj.get(key),str) and len(obj[key])<50:
                     defaults[key]=obj[key]
+            groups=obj.get('premium_clean_categories')
+            if isinstance(groups,list):
+                defaults['premium_clean_categories']=[k for k in ('temp','cache','reports','dumps') if k in groups]
+            # Old preview-only settings can never opt a user into scheduled deletion.
+            if not defaults['premium_clean_categories']:
+                defaults['premium_weekly_clean_enabled']=False
     except (OSError,ValueError,UnicodeError):pass
     return defaults
 
