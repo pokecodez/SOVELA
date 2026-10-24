@@ -7,7 +7,9 @@ from pathlib import Path
 
 from sovela_auth import (AccountError, SupabaseAccounts, TokenStore, read_cloud_config,
                          VERSION)
-from sovela_v30 import SovelaV3
+from sovela_v31 import SovelaV31
+from sovela_window import schedule_chrome
+from sovela_ai import windows_work_area, clamp_to_area
 
 BG='#F3F6F5'
 CARD='#FFFFFF'
@@ -32,8 +34,9 @@ class AccountGate:
         root.overrideredirect(False)
         root.resizable(False, False)
         root.configure(bg=BG)
-        root.geometry('740x640')
+        root.geometry('740x680')
         self.center()
+        schedule_chrome(root)
         self._has_saved_session=bool(self.client and TokenStore().load())
         if self._has_saved_session:
             self._show_resume_splash()
@@ -50,6 +53,7 @@ class AccountGate:
     def _show_resume_splash(self):
         """Neutral launch splash, no flashing login before saved session refresh."""
         self.root.configure(bg=BG)
+        self._auth_titlebar()
         panel=tk.Frame(self.root,bg=BG)
         panel.pack(fill='both',expand=True)
         tk.Label(panel,text='◈',font=(FONT,48),bg=BG,fg=SAGE).pack(pady=(180,14))
@@ -58,13 +62,14 @@ class AccountGate:
 
     def center(self):
         self.root.update_idletasks()
-        width,height=740,640
+        width,height=740,680
         self.root.geometry('%dx%d+%d+%d' % (width,height,
                     max(0,(self.root.winfo_screenwidth()-width)//2),
                     max(0,(self.root.winfo_screenheight()-height)//2)))
 
     def draw(self):
         for w in self.root.winfo_children():w.destroy()
+        self._auth_titlebar()
         surface=tk.Frame(self.root,bg=BG)
         surface.pack(fill='both', expand=True)
         # Tiny left brand rail + simple authentication card.
@@ -84,7 +89,7 @@ class AccountGate:
                  font=(FONT,23,'bold')).pack(anchor='w',pady=(7,0))
         tk.Label(content,text='Your security and PC care, all in one place.',
                  fg=MUTED,bg=BG,font=(FONT,10)).pack(anchor='w',pady=(5,8))
-        tk.Label(content,text=('90 days of Premium included for new accounts' if self.client
+        tk.Label(content,text=('Trial availability is shown before you confirm your account' if self.client
                                else 'Creator setup required for real accounts'),
                  fg=SAGE,bg=BG,font=(FONT,9,'bold')).pack(anchor='w',pady=(0,15))
         self.form_area=tk.Frame(content,bg=BG)
@@ -127,14 +132,15 @@ class AccountGate:
         self.have_code_btn.pack(side='right')
         # Confirmation never leaves the app; the user types an emailed OTP.
         self.verification_area = tk.Frame(content,bg=BG)
-        tk.Label(self.verification_area,text='Verify your email', fg=INK, bg=BG,
+        tk.Label(self.verification_area,text='Check your email', fg=INK, bg=BG,
                  font=(FONT,17,'bold')).pack(anchor='w',pady=(18,6))
         self.verify_info = tk.StringVar(value='Enter the code from your confirmation email.')
         tk.Label(self.verification_area,textvariable=self.verify_info,
                  fg=MUTED,bg=BG,font=(FONT,10),wraplength=373,
                  justify='left').pack(anchor='w',pady=(0,17))
-        tk.Label(self.verification_area,text='EMAIL CONFIRMATION CODE',
-                 fg=MUTED,bg=BG,font=(FONT,9,'bold')).pack(anchor='w',pady=(0,8))
+        self.code_heading=tk.Label(self.verification_area,text='EMAIL CONFIRMATION CODE',
+                 fg=MUTED,bg=BG,font=(FONT,9,'bold'))
+        self.code_heading.pack(anchor='w',pady=(0,8))
         self.code_entry=tk.Entry(self.verification_area,bg=CARD,fg=INK,
                  insertbackground=INK,font=(FONT,17,'bold'),bd=0,
                  highlightbackground='#CBD8D4',highlightcolor=SAGE,
@@ -159,6 +165,38 @@ class AccountGate:
                      font=(FONT,8),fg=MUTED,bg=BG).pack(anchor='w')
         self.set_mode('signin' if self.client else 'signup')
 
+    def _auth_titlebar(self):
+        """Sovela's own minimise/close controls while Windows keeps the taskbar."""
+        bar=tk.Frame(self.root,bg=CARD,height=40)
+        bar.pack(fill='x')
+        bar.pack_propagate(False)
+        left=tk.Label(bar,text='  ◈   sovela.',bg=CARD,fg=INK,font=(FONT,12,'bold'))
+        left.pack(side='left',padx=(10,0))
+        close=tk.Button(bar,text='×',command=self.root.destroy,bd=0,relief='flat',
+                        bg=CARD,fg=MUTED,activebackground='#F7E6E6',
+                        font=(FONT,16),cursor='hand2',width=3)
+        close.pack(side='right',padx=(0,8))
+        mini=tk.Button(bar,text='—',command=self.root.iconify,bd=0,relief='flat',
+                       bg=CARD,fg=MUTED,activebackground=PALE,
+                       font=(FONT,12),cursor='hand2',width=4)
+        mini.pack(side='right')
+        for item in (bar,left):
+            item.bind('<ButtonPress-1>',self._start_auth_drag)
+            item.bind('<B1-Motion>',self._move_auth_drag)
+        tk.Frame(self.root,height=1,bg='#E1EAE6').pack(fill='x')
+
+    def _start_auth_drag(self,event):
+        self._auth_dx=event.x_root-self.root.winfo_x()
+        self._auth_dy=event.y_root-self.root.winfo_y()
+
+    def _move_auth_drag(self,event):
+        x=event.x_root-getattr(self,'_auth_dx',0)
+        y=event.y_root-getattr(self,'_auth_dy',0)
+        area=(windows_work_area(event.x_root,event.y_root)
+              or (0,0,self.root.winfo_screenwidth(),self.root.winfo_screenheight()))
+        x,y=clamp_to_area(x,y,self.root.winfo_width(),self.root.winfo_height(),area)
+        self.root.geometry(f'+{x}+{y}')
+
     def button(self,parent,text,cmd,primary):
         return tk.Button(parent,text=text,command=cmd,cursor='hand2',bd=0,relief='flat',
               highlightthickness=0,font=(FONT,10,'bold'),padx=12,pady=10,
@@ -172,9 +210,26 @@ class AccountGate:
     def set_mode(self,mode):
         if self.busy:return
         self.mode=mode
+        if mode=='verify_link':
+            self.form_area.pack_forget()
+            self.verification_area.pack(fill='x',before=self.status_label)
+            self.verify_info.set('Check the confirmation LINK sent to your email.\n\n'
+                'Your account is created when you register, but you must verify the email '
+                'before signing in. If the link shows a localhost error, confirmation may '
+                'still have succeeded. Close that tab, come back to Sovela and sign in.')
+            self.code_heading.pack_forget()
+            self.code_entry.pack_forget()
+            self.recovery_password.pack_forget()
+            self.confirm_btn.configure(text='I opened the link — Sign in →',
+                                       command=lambda:self.set_mode('signin'))
+            self.resend_btn.configure(text='Resend confirmation email')
+            self.set_status('Never share your confirmation link. Sovela does not need a verification code.')
+            return
         if mode in ('verify','recover'):
             self.form_area.pack_forget()
             self.verification_area.pack(fill='x',before=self.status_label)
+            self.code_heading.pack(anchor='w',pady=(0,8))
+            self.code_entry.pack(fill='x',ipady=10)
             self.verify_info.set(('Enter the recovery code for ' if mode=='recover' else 'Enter the confirmation code for ')+str(self.pending_email or 'your email')+'.')
             self.confirm_btn.configure(text='Reset password →' if mode=='recover' else 'Confirm email →',
                                        command=self.confirm_recovery if mode=='recover' else self.verify_code)
@@ -249,7 +304,7 @@ class AccountGate:
             self.start_app(session,self.client)
         elif mode=='signup':
             self.pending_email = self.email_entry.get().strip().lower()
-            self.set_mode('verify')
+            self.set_mode('verify_link')
         else:
             self.set_status('Sign in was not completed. Check your email verification.')
 
@@ -295,7 +350,7 @@ class AccountGate:
         elif error:
             self.set_status(error+' Your PC care data remains on this computer.')
         else:
-            self.set_status('Sign in or create your free account. New accounts get 90 days of Premium.')
+            self.set_status('Sign in or create your free account. Your account will show the current Premium trial offer.')
 
     def reset_password(self):
         if not self.client:return
@@ -328,4 +383,4 @@ class AccountGate:
         self.generation+=1
         # Do not start the regular startup loader until login has completed.
         for w in self.root.winfo_children():w.destroy()
-        SovelaV3(self.root,session,client,self.config.get('updates_repo',''))
+        SovelaV31(self.root,session,client,self.config.get('updates_repo',''))

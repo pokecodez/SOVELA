@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
-VERSION = '3.0.0'
+VERSION = '3.1.0'
 MAX_RESPONSE_BYTES = 1_000_000
 
 
@@ -305,6 +305,49 @@ class SupabaseAccounts:
             raise AccountError('Grant duration must be between 1 and 365 days.')
         return self.request('POST','/rest/v1/rpc/sovela_admin_grant',
                             {'target_user':str(user_id),'grant_days':days},session.access_token)
+
+    def start_checkout(self,session):
+        # Supabase Edge Function only; session user is verified on the SERVER.
+        endpoint=self.url+'/functions/v1/create-checkout'
+        req=urllib.request.Request(endpoint,data=b'{}',method='POST',headers={
+            'apikey':self.key,'Authorization':'Bearer '+session.access_token,
+            'Content-Type':'application/json','User-Agent':'Sovela/3.1'})
+        try:
+            with self.opener(req,timeout=20) as response:
+                value=json.loads(response.read(20000))
+        except (OSError,urllib.error.URLError,ValueError,TypeError):
+            raise AccountError('Premium checkout is not available yet.') from None
+        url=str(value.get('url','')) if isinstance(value,dict) else ''
+        if not url.startswith('https://checkout.stripe.com/'):
+            raise AccountError('Checkout did not return a verified Stripe address.')
+        return url
+
+    def public_config(self):
+        # Public RPC returns only safe text and feature policies.
+        return self.request('POST','/rest/v1/rpc/sovela_public_config',{})
+
+    def admin_config(self,session):
+        return self.request('POST','/rest/v1/rpc/sovela_admin_config',{},session.access_token)
+
+    def admin_set_config(self,session,setting,value):
+        allowed={'trial_days','headline','subline','announcement','min_supported_version','checkout_url'}
+        if setting not in allowed:raise AccountError('This setting cannot be edited.')
+        return self.request('POST','/rest/v1/rpc/sovela_admin_set_config',
+            {'setting_name':setting,'setting_value':str(value)},session.access_token)
+
+    def admin_find(self,session,email):
+        text=str(email or '').strip().lower()
+        if len(text)>254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',text):
+            raise AccountError('Enter an exact customer email address.')
+        return self.request('POST','/rest/v1/rpc/sovela_admin_find_account',
+            {'account_email':text},session.access_token)
+
+    def admin_revoke(self,session,user_id):
+        import uuid
+        try:uuid.UUID(str(user_id))
+        except (ValueError,TypeError):raise AccountError('Invalid account ID.') from None
+        return self.request('POST','/rest/v1/rpc/sovela_admin_revoke',
+            {'target_user':str(user_id)},session.access_token)
 
     def verify_recovery_code(self,email,code):
         email=str(email or '').strip().lower()

@@ -5,14 +5,6 @@ import tkinter as tk
 from sovela_launcher import AccountGate
 
 if __name__ == '__main__':
-    # Give Sovela one consistent Windows taskbar identity, including when
-    # launched via the installer and when displaying its login screen.
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('Sovela.PCCare.Desktop')
-        except (AttributeError, OSError):
-            pass
     root = tk.Tk()
     try:
         base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
@@ -21,5 +13,7 @@ if __name__ == '__main__':
         root._sovela_icon = icon
     except (OSError, tk.TclError):
         pass
+    from sovela_dialogs import install
+    install()
     AccountGate(root)
     root.mainloop()

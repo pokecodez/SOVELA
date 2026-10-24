@@ -523,6 +523,8 @@ class SovelaApp:
         # Windows to treat Sovela as a floating tool instead of a taskbar app.
         root.overrideredirect(False)
         root.resizable(False, False)
+        from sovela_window import schedule_chrome
+        schedule_chrome(root)
         self.center_window()
         root.bind('<Control-w>', lambda _e: root.destroy())
         root.bind('<Control-m>', lambda _e: self.minimize_window())
@@ -647,8 +649,14 @@ class SovelaApp:
         name.pack(side='left')
         subtitle=tk.Label(bar,text=' /  pc care',bg=SLATE_CARD,fg=SLATE_MUTED,font=(SLATE_FONT,10))
         subtitle.pack(side='left',padx=(4,0),pady=(4,0))
-        # The OS title bar now owns the minimise and close buttons. Keeping
-        # them again here would create duplicate controls in Sovela's header.
+        # Custom window controls; the underlying window stays Windows-managed,
+        # so it still appears on the taskbar and restores from minimised state.
+        close = self.text_button(bar,'×',self.close,size=18,bg=SLATE_CARD,
+                                 fg=SLATE_MUTED,width=3)
+        close.pack(side='right',padx=(0,10),pady=8)
+        minimize = self.text_button(bar,'—',self.minimize_window,size=13,
+                                    bg=SLATE_CARD,fg=SLATE_MUTED,width=3)
+        minimize.pack(side='right')
         self.pin_button=self.text_button(bar,'Pin  ○',self.toggle_pin,size=10,bg=SLATE_CARD,fg=SLATE_MUTED)
         self.pin_button.pack(side='right',padx=(3,13))
         for w in (bar,logo,name,subtitle):

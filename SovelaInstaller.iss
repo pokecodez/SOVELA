@@ -1,7 +1,7 @@
 ; Sovela Windows installer - Inno Setup 6
 ; Keep AppId unchanged in later versions so upgrades install over the same app.
 #define MyAppName "Sovela"
-#define MyAppVersion "3.0.0"
+#define MyAppVersion "3.1.0"
 #define MyAppExeName "Sovela.exe"
 
 [Setup]
@@ -43,4 +43,3 @@ Name: "{autodesktop}\Sovela"; Filename: "{app}\Sovela.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Sovela.exe"; Description: "Launch Sovela"; Flags: nowait postinstall skipifsilent
-
