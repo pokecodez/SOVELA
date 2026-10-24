@@ -519,7 +519,9 @@ class SovelaApp:
 
         root.title('Sovela · Slate edition 1.3')
         root.configure(bg=SLATE_LINE)
-        root.overrideredirect(True)
+        # Keep the normal Windows-managed app window. Override-redirect causes
+        # Windows to treat Sovela as a floating tool instead of a taskbar app.
+        root.overrideredirect(False)
         root.resizable(False, False)
         self.center_window()
         root.bind('<Control-w>', lambda _e: root.destroy())
@@ -597,38 +599,28 @@ class SovelaApp:
         self.root.geometry(f'+{x}+{y}')
 
     def minimize_window(self):
-        if self.root.state() != 'normal':
-            return
-        self._restoring_from_minimize=True
-        self._minimize_phase='preparing'
+        """Use native minimise, preserving Sovela's Windows taskbar presence."""
         try:
-            self.root.withdraw()
-            self.root.overrideredirect(False)
-            self.root.deiconify()
-            self.root.update_idletasks()
             self.root.iconify()
-            self._minimize_phase='iconified'
         except tk.TclError:
-            self._restoring_from_minimize=False
-            self._minimize_phase=None
-            self.root.deiconify()
-            self.root.overrideredirect(True)
-            self.ensure_visible()
+            pass
 
     def on_map(self, event):
-        if event.widget is self.root and self._restoring_from_minimize and self._minimize_phase=='iconified':
-            self.root.after(60,self.restore_after_minimize)
+        """Tk handles restoring the normal application window."""
+        if event.widget is self.root:
+            self._restoring_from_minimize = False
+            self._minimize_phase = None
 
     def restore_after_minimize(self):
-        if not self._restoring_from_minimize or self._minimize_phase!='iconified' or self.root.state()!='normal':
-            return
-        self.root.withdraw()
-        self.root.overrideredirect(True)
-        self.root.deiconify()
-        self._restoring_from_minimize=False
-        self._minimize_phase=None
-        self.root.attributes('-topmost',self.pinned)
-        self.ensure_visible()
+        """Open the main app from an in-app scan notification."""
+        try:
+            if self.root.state() == 'iconic':
+                self.root.deiconify()
+            self.root.lift()
+            self.root.attributes('-topmost', self.pinned)
+            self.ensure_visible()
+        except tk.TclError:
+            pass
 
     def toggle_pin(self):
         self.pinned=not self.pinned
@@ -655,10 +647,8 @@ class SovelaApp:
         name.pack(side='left')
         subtitle=tk.Label(bar,text=' /  pc care',bg=SLATE_CARD,fg=SLATE_MUTED,font=(SLATE_FONT,10))
         subtitle.pack(side='left',padx=(4,0),pady=(4,0))
-        close=self.text_button(bar,'×',self.close,size=19,bg=SLATE_CARD,fg=SLATE_MUTED,width=3)
-        close.pack(side='right',padx=(0,10),pady=9)
-        minimize=self.text_button(bar,'—',self.minimize_window,size=14,bg=SLATE_CARD,fg=SLATE_MUTED,width=3)
-        minimize.pack(side='right')
+        # The OS title bar now owns the minimise and close buttons. Keeping
+        # them again here would create duplicate controls in Sovela's header.
         self.pin_button=self.text_button(bar,'Pin  ○',self.toggle_pin,size=10,bg=SLATE_CARD,fg=SLATE_MUTED)
         self.pin_button.pack(side='right',padx=(3,13))
         for w in (bar,logo,name,subtitle):
