@@ -1,4 +1,4 @@
-name: SOVELA 3.1.2 - PREVIEW OR SIGNED BUILD
+name: SOVELA 3.1.2 - SELF CONTAINED PREVIEW
 
 # Default: build a source preview for testing with official Python.
 # Signed EXE generation is opt-in only after obtaining a real trusted certificate.
@@ -23,6 +23,55 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Generate source launcher automatically
+        shell: pwsh
+        run: |
+          # This launcher is a build output, not a required tracked source file.
+          # Never download or run unverified binaries or disable Windows security.
+          @'
+          @echo off
+          setlocal EnableExtensions
+          cd /d "%~dp0"
+          title Sovela - source recovery
+          set "SOVELA_PYTHON="
+          where py >nul 2>&1
+          if not errorlevel 1 (
+            py -3.13 -c "import tkinter" >nul 2>&1
+            if not errorlevel 1 set "SOVELA_PYTHON=py -3.13"
+            if not defined SOVELA_PYTHON (
+              py -3 -c "import tkinter" >nul 2>&1
+              if not errorlevel 1 set "SOVELA_PYTHON=py -3"
+            )
+          )
+          if not defined SOVELA_PYTHON (
+            where python >nul 2>&1
+            if not errorlevel 1 (
+              python -c "import tkinter" >nul 2>&1
+              if not errorlevel 1 set "SOVELA_PYTHON=python"
+            )
+          )
+          if not defined SOVELA_PYTHON (
+            echo Sovela could not find a full Python 3 installation with Tkinter.
+            echo Download the official Windows Python installer from https://www.python.org/downloads/windows/
+            echo Then double-click this file again. No antivirus settings need changing.
+            pause
+            exit /b 1
+          )
+          REM Only PUBLIC Supabase configuration is copied from a previous installation.
+          set "OLD_CLOUD=%LOCALAPPDATA%\Programs\Sovela\sovela_cloud.json"
+          if exist "%OLD_CLOUD%" (
+            %SOVELA_PYTHON% -c "import json,os,pathlib; p=pathlib.Path('sovela_cloud.json'); old=pathlib.Path(os.environ['OLD_CLOUD']); current=json.loads(p.read_text(encoding='utf-8-sig')); installed=json.loads(old.read_text(encoding='utf-8-sig')); allowed={k:installed.get(k,'') for k in ('supabase_url','supabase_publishable_key','updates_repo')}; p.write_text(json.dumps(allowed,indent=2),encoding='utf-8') if not current.get('supabase_url') and allowed['supabase_url'] and allowed['supabase_publishable_key'] else None" 2>nul
+          )
+          echo Starting Sovela v3.1.2 from the original Python source...
+          %SOVELA_PYTHON% main.py
+          if errorlevel 1 (
+            echo Sovela could not start. Copy this window's error if you need help.
+            pause
+          )
+          endlocal
+          '@ | Set-Content -Path 'RUN_SOVELA_SOURCE.bat' -Encoding ascii
+          if (-not (Test-Path 'RUN_SOVELA_SOURCE.bat')) { throw 'Could not create source launcher' }
+
       - name: Check Sovela source and version
         shell: pwsh
         run: |
@@ -38,7 +87,7 @@ jobs:
           missing = [f for f in essential if not (root / f).is_file()]
           if missing:
               raise RuntimeError('Missing Sovela files: ' + ', '.join(missing) +
-                                 '. Upload the COMPLETE restored source, not only a patch.')
+                                 '. The repository is missing required application source files.')
           for file in root.glob('*.py'):
               ast.parse(file.read_text(encoding='utf-8-sig'), filename=str(file))
           source = (root / 'sovela_v31.py').read_text(encoding='utf-8-sig')
